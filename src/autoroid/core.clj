@@ -1,38 +1,66 @@
 (ns autoroid.core
   (:use
-    clojure.java.shell
-    )
-  )
+    autoroid.shell
+    autoroid.command
+    ))
 
-(declare adb-shell)
+(declare adb-shell fb-addr)
+
+;; Key code.
+(def key-home 3)
+(def key-back 4)
+(def key-power 26)
+(def key-unlock 82)
 
 ;; Configuration.
 (def ^:private cfgs
-  (atom {:num-fb-header-blocks 3  ; header block size of frame buffer.
-                                  ; a block is the byte array for a pixel.
+  (atom {
+         ; header block size of frame buffer.
+         ; a block is the byte array for a pixel(usually 4-byte).
+         :num-fb-header-blocks 3
+
          :long-touch-dur 2000     ; duration(msec) for long touch.
          :flick-dur 50            ; duration(msec) for flick.
-         :drag-speed 1            ; 
+         :drag-speed 1.0          ; 1.0 = 1000px per 1000msec.
          :sdk-path nil
          :width nil
          :height nil
+         :blink-dur 300
+         :long-dur 15000
+         :middle-dur 8000
+         :short-dur 2000
          }))
 
-;; Key code.
-(def key-power 26)
-(def key-unlock 82)
-(def key-home 3)
-(def key-back 4)
-(def num-fb-header-blocks 3)  ; フレームバッファヘッダのブロック数。
+(defn- display-size []
+  (let [out (adb-shell (size-cmd))
+        [_ w h] (re-matches #"\D+(\d+)x(\d+)\D+" out)]
+    (if w
+      [(Integer/parseInt w) (Integer/parseInt h)]
+      nil)))
 
-(defn win-os?
-  "Returns true if OS is Windows."
-  []
-  (-> "os.name"
-      System/getProperty
-      (->> (re-matches #"^Win.+"))
-      (if true false)))
+(defn- mk-fb-addr
+  [cfgs]
+  (fn [off]
+    (+ off (:num-fb-header-blocks cfgs))))
 
+(defn- def-fns [cfgs]
+  (def adb-shell (mk-adb-shell cfgs))
+  (def ^:private fb-addr (mk-fb-addr cfgs)))
+
+(defn configure
+  "Configures the library.
+   Returns new configuration map."
+  [config-map]
+  (swap! cfgs merge config-map)
+  (def-fns @cfgs)
+  (when-not (and (:width config-map) (:height config-map))
+    (let [[w h] (display-size)]
+      (when-not w (throw (RuntimeException. "Unknown display size.")))
+      (swap! cfgs merge {:width w :height h})))
+  @cfgs)
+
+
+;; Utility.
 (defn sleep
   "Equivalent to Thread/sleep."
   [ms]
@@ -45,10 +73,10 @@
   ([d]
    (case d
      :none nil
-     :blink (sleep 300)
-     :long (sleep 15000)
-     :middle (sleep 8000)
-     :short (sleep 2000)))
+     :blink (sleep (:blink-dur @cfgs))
+     :long (sleep (:long-dur @cfgs))
+     :middle (sleep (:middle-dur @cfgs))
+     :short (sleep (:short-dur @cfgs))))
   ([d n]
    (dotimes [m n] (pause d))))
 
@@ -65,99 +93,16 @@
   ([code]
    (System/exit code)))
 
-(defn- resolve-path
-  [base end]
-  #_(-> base
-      (java.nio.file.Paths/get (into-array String [])) ; needs java8 which portage doesn't support yet.
-      (.resolve end)
-      (.toAbsolutePath)
-      (.toString)))
 
-(defn- run-sh [args]
-  (let [{:keys [out err]} (apply sh args)]
-    (if (= out "") err out)))
-
-(defn- mk-adb-shell []
-  (let [osshell (if (win-os?) ["cmd" "/c"] [])
-        oscmd ["adb" "shell"]
-        adb-dir (if-let [sdk-path (:sdk-path @cfgs)]
-                  (resolve-path sdk-path "platform-tools")
-                  ".")]
-    (fn [andcmd]
-      (let [andcmd (str andcmd "\r\nexit\r\n")]
-        (run-sh (concat osshell oscmd (list :in andcmd :dir adb-dir)))))))
-
-(defn- query-display-size []
-  (let [out (adb-shell "wm size")
-        [_ w h] (re-matches #"\D+(\d+)x(\d+)\D+" out)]
-    [(Integer/parseInt w) (Integer/parseInt h)]))
-
-(defn- configure-display-size []
-  (let [[w h] (query-display-size)]
-    (swap! cfgs merge {:width w :height h})))
-
-(defn configure
-  "Configures the library.
-   Valid keys are :sdk-path, :width, and :height.
-   Returns new configuration map."
-  [configuration-map]
-  (swap! cfgs merge configuration-map)
-  (def adb-shell (mk-adb-shell))
-  (when-not (and (:width @cfgs) (:height @cfgs))
-    (configure-display-size))
-  @cfgs)
-
-;; Building a string for adb-shell.
-(defn- key-cmd
-  [k]
-  (str "input keyevent " k))
-(defn- tap-cmd
-  [x y]
-  (str "input touchscreen tap " x " " y))
-(defn- long-touch-cmd
-  [x y]
-  (str "input touchscreen swipe " x " " y " " x " " y " " (:long-touch-dur @cfgs)))
-(defn- drag-cmd
-  [x1 y1 x2 y2]
-  (let [dx (- x1 x2)
-        dy (- y1 y2)
-        d2 (quot (+ (* dx dx) (* dy dy)) 1000)
-        dur (* d2 (:drag-speed @cfgs))]
-    (str "input touchscreen swipe " x1 " " y1 " " x2 " " y2 " " dur)))
-(defn- flick-cmd
-  [x1 y1 dir dis]
-  (let [delta-map {:up [0 -1] :down [0 1] :right [1 0] :left [-1 0]}
-        [dx dy] (map #(* dis %) (dir delta-map))
-        x2 (+ x1 dx)
-        y2 (+ y1 dy)]
-    (str "input touchscreen swipe " x1 " " y1 " " x2 " " y2 " " (:flick-dur @cfgs))))
-(defn- dd-cmd
-  [addr]
-  (str "dd if=keeper.raw bs=4 count=1 skip=" addr " 2>/dev/null |hd"))
-(defn- pixel-seq-cmd
-  [addrs refresh?]
-  (let [addrs-str (clojure.string/join " " addrs)]
-    (str "cd /sdcard/Temp && "
-         (if refresh? "screencap keeper.raw && " "")
-         "for a in " addrs-str "; do " (dd-cmd "$a") "; done")))
-(defn- pixel-cmd
-  [addr refresh?]
-  (pixel-seq-cmd [addr] refresh?))
-(defn- start-cmd
-  [act]
-  (str "am start " act))
-(defn- stop-cmd
-  [app]
-  (str "am force-stop " app))
-
-;; Issueing adb shell command.
+;; Push keys or touch/drag screen.
 (defn adb-key
   "Pushes a key and pause for a while."
   ([k]
-   (adb-key k :short))
+   (adb-key k :blink))
   ([k d]
    (adb-shell (key-cmd k))
    (pause d)))
+
 (defn adb-tap
   "Taps a point and pause for a while."
   ([x y]
@@ -165,21 +110,24 @@
   ([x y d]
    (adb-shell (tap-cmd x y))
    (pause d)))
+
 (defn adb-long-touch
   "Makes a long-touch and pause for a while."
   ([x y]
    (adb-long-touch x y :short))
   ([x y d]
-   (adb-shell (long-touch-cmd x y))
+   (adb-shell (long-touch-cmd x y (:long-touch-dur @cfgs)))
    (pause d)))
+
 (defn adb-drag
   "Drags from a point to another point
    and pause for a while."
   ([x1 y1 x2 y2]
    (adb-drag x1 y1 x2 y2 :short))
   ([x1 y1 x2 y2 d]
-   (adb-shell (drag-cmd x1 y1 x2 y2))
+   (adb-shell (drag-cmd x1 y1 x2 y2 (:drag-speed @cfgs)))
    (pause d)))
+
 (defn adb-flick
   "Flicks from a point for a distance
    and pause for a while.
@@ -187,8 +135,9 @@
   ([x y dir dis]
    (adb-flick x y dir dis :short))
   ([x y dir dis d]
-   (adb-shell (flick-cmd x y dir dis))
+   (adb-shell (flick-cmd x y dir dis (:flick-dur @cfgs)))
    (pause d)))
+
 (defn adb-start
   "Start an app(activity)."
   ([act]
@@ -196,13 +145,34 @@
   ([act d]
    (adb-shell (start-cmd act))
    (pause d)))
+
 (defn adb-stop
   "Stop an app by force."
   ([app]
    (adb-stop app :short))
   ([app d]
-  (adb-shell (stop-cmd app))
-  (pause d)))
+   (adb-shell (stop-cmd app))
+   (pause d)))
+
+
+;; Lock/Unlock
+(defn screen-locked? []
+  "Returns true if screen is off(locked)."
+  (let [out (adb-shell (power-status-cmd))]
+    (if (re-find #"Display Power: state=OFF" out) true false)))
+
+(defn unlock-screen []
+  "Turns the screen on and unlock."
+  (when (screen-locked?)
+    (adb-key key-power)
+    (adb-key key-unlock)))
+
+(defn lock-screen []
+  "Turns the screen off."
+  (when-not (screen-locked?)
+    (adb-key key-power)))
+
+
 ;; Handling frame buffer.
 (defn pixel-offset
   "From (x, y) to offset in frame buffer.
@@ -210,9 +180,6 @@
   ([x y] (pixel-offset x y (:width @cfgs)))
   ([x y w]
    (+ (* w y) x)))
-(defn- fb-addr
-  [off]
-  (+ off num-fb-header-blocks))
 (defn- fb-rgb-seq
   [out]
   (re-seq #"00000000 +([a-f\d]{2}) ([a-f\d]{2}) ([a-f\d]{2})" (clojure.string/lower-case out)))
@@ -243,22 +210,3 @@
   ([x y refresh?]
    (or (fb-pixel-str (pixel-offset x y) refresh?) "")))
 
-(defn power-on? []
-  "Returns true if screen is on."
-  (let [uw (quot (:width @cfgs) 4)
-        uh (quot (:height @cfgs) 4)]
-  (not (= "000000"
-          (adb-pixel-str uw uh :refresh)
-          (adb-pixel-str (* uw 2) (* uh 2))
-          (adb-pixel-str (* uw 3) (* uh 3))))))
-
-(defn power-on []
-  "Turns the screen on and unlock."
-  (when-not (power-on?)
-    (adb-key key-power)
-    (adb-key key-unlock)))
-
-(defn power-off []
-  "Turns the screen off."
-  (when (power-on?)
-    (adb-key key-power)))
