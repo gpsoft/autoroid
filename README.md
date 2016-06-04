@@ -1,14 +1,24 @@
 # autoroid
 
-A Clojure library designed to ... well, that part is up to you.
+A Clojure library designed to operate Android devices from remote(using adb).
 
-## Usage
+# Usage
 
-FIXME
+    (ns yourapp.core
+      (:use
+        autoroid.core))
 
-## License
+    (defn -main
+      [& args]
+      (configure {:width 1200 :height 1920})
+      (unlock-screen)
+      (adb-start "jp.hoge.yourapp/.MainActivity")
+      (adb-tap 300 200)
+      (when (= (adb-pixel-str 500 32) "cc8800")
+        (adb-long-touch 450 900))
+      (adb-key key-back)
+      (adb-stop "jp.hoge.yourapp"))
 
-Copyright © 2015 FIXME
+# Document
 
-Distributed under the Eclipse Public License either version 1.0 or (at
-your option) any later version.
+See [API document](docs/index.html).
