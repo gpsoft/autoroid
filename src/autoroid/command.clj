@@ -1,6 +1,7 @@
 (ns autoroid.command)
 
 ;; Building a string for adb-shell.
+
 (defn key-cmd
   [k]
   (str "input keyevent " k))
@@ -46,15 +47,13 @@
   "dumpsys power")
 
 
-
-
-
-
 (defn- dd-cmd
+  "dd command line for one address."
   [addr]
   (str "dd if=keeper.raw bs=4 count=1 skip=" addr " 2>/dev/null |hd"))
 
 (defn pixel-seq-cmd
+  "script to scan pixel for a seriese of addresses."
   [addrs refresh?]
   (let [addrs-str (clojure.string/join " " addrs)]
     (str "cd /sdcard/Temp && "
@@ -62,5 +61,6 @@
          "for a in " addrs-str "; do " (dd-cmd "$a") "; done")))
 
 (defn pixel-cmd
+  "script to scan pixel for one address."
   [addr refresh?]
   (pixel-seq-cmd [addr] refresh?))
